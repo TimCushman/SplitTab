@@ -178,29 +178,46 @@ export default function App() {
     setScreen("waiting");
   }
 
+  async function compressImage(file) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX = 1200;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+          else { width = Math.round(width * MAX / height); height = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = url;
+    });
+  }
+
   async function handleReceiptFile(file) {
     if (!file) return;
     setParsing(true);
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const dataUrl = e.target.result;
+    try {
+      const dataUrl = await compressImage(file);
       const base64 = dataUrl.split(",")[1];
-      const mediaType = file.type || "image/jpeg";
-      try {
-        const res = await fetch("/api/parse-receipt", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: base64, mediaType }),
-        });
-        const data = await res.json();
-        if (data.items) setParsedItems(data.items);
-        else setError(data.error || "Could not parse receipt");
-      } catch {
-        setError("Receipt parsing failed");
-      }
-      setParsing(false);
-    };
-    reader.readAsDataURL(file);
+      const res = await fetch("/api/parse-receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64, mediaType: "image/jpeg" }),
+      });
+      const data = await res.json();
+      if (data.items) setParsedItems(data.items);
+      else setError(data.error || "Could not parse receipt");
+    } catch {
+      setError("Receipt parsing failed");
+    }
+    setParsing(false);
   }
 
   function copyLink() {
