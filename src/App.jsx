@@ -71,8 +71,6 @@ export default function App() {
   const [error, setError]               = useState(null);
 
   const [dinnerName, setDinnerName] = useState("");
-  const [payerName,  setPayerName]  = useState("");
-  const [payerVenmo, setPayerVenmo] = useState("");
   const [myName,     setMyName]     = useState("");
   const [myVenmo,    setMyVenmo]    = useState("");
   const [dragging,   setDragging]   = useState(false);
@@ -127,11 +125,11 @@ export default function App() {
   }, [room]);
 
   async function createRoom() {
-    if (!dinnerName || !payerVenmo || !myName) return;
+    if (!dinnerName || !myName || !myVenmo) return;
     setLoading(true);
     const { data, error } = await sb.from("rooms").insert({
-      name: dinnerName, payer_name: payerName || myName,
-      payer_venmo: payerVenmo.replace("@", ""), items: DEMO_ITEMS,
+      name: dinnerName, payer_name: myName,
+      payer_venmo: myVenmo.replace("@", ""), items: DEMO_ITEMS,
     }).select().single();
     if (error) { setError(error.message); setLoading(false); return; }
     setRoom(data);
@@ -204,12 +202,10 @@ export default function App() {
       <div style={s.logo}><span style={s.logoMark}>⬡</span><span style={s.logoText}>SplitTab</span></div>
       <p style={s.sub}>Drop a receipt. Tap what you had. Shared dishes split automatically.</p>
       <Divider>The dinner</Divider>
-      <Field label="Dinner name"      value={dinnerName} onChange={setDinnerName} placeholder="e.g. Sushi Friday" />
-      <Field label="Who paid? (name)" value={payerName}  onChange={setPayerName}  placeholder="e.g. Alex" />
-      <Field label="Their Venmo"      value={payerVenmo} onChange={setPayerVenmo} placeholder="@venmo-handle" />
-      <Divider>You</Divider>
-      <Field label="Your name"        value={myName}  onChange={setMyName}  placeholder="e.g. Tim" />
-      <Field label="Your Venmo (opt)" value={myVenmo} onChange={setMyVenmo} placeholder="@your-handle" />
+      <Field label="Dinner name" value={dinnerName} onChange={setDinnerName} placeholder="e.g. Sushi Friday" />
+      <Divider>You (the one who paid)</Divider>
+      <Field label="Your name"  value={myName}  onChange={setMyName}  placeholder="e.g. Tim" />
+      <Field label="Your Venmo" value={myVenmo} onChange={setMyVenmo} placeholder="@your-handle" />
       <div style={{ ...s.dropzone, ...(dragging ? s.dropzoneActive : {}) }}
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
@@ -220,8 +216,8 @@ export default function App() {
         <div style={{ fontSize:14, fontWeight:600, color:"#ccc", marginBottom:3 }}>Drop receipt photo</div>
         <div style={{ fontSize:12, color:"#555" }}>Using demo receipt for now</div>
       </div>
-      <button style={{ ...s.primaryBtn, ...(!dinnerName||!payerVenmo||!myName ? s.disabled : {}) }}
-        disabled={!dinnerName||!payerVenmo||!myName} onClick={createRoom}>
+      <button style={{ ...s.primaryBtn, ...(!dinnerName||!myName||!myVenmo ? s.disabled : {}) }}
+        disabled={!dinnerName||!myName||!myVenmo} onClick={createRoom}>
         Create room & get link
       </button>
     </div></div>
