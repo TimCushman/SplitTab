@@ -29,7 +29,7 @@ export default async function handler(req, res) {
 [{ "id": "1", "name": "Item Name", "price": 12.50 }, ...]
 - Exclude tax, tip, subtotal, total lines
 - Use the actual menu item names
-- Price should be the total for that line (e.g. if it's "x2" multiply it out)
+- Price should be the final line total (e.g. "Beer x3 ... $18.00" → price is 18.00, not 6.00)
 - id should be a simple incrementing string number`,
           },
         ],
