@@ -24,43 +24,54 @@ npm run dev
 
 ## Supabase setup
 
-Three tables are required. Run this in the Supabase SQL editor:
+Three tables are required. Run this in **Supabase > SQL Editor**:
 
 ```sql
+-- 1. ROOMS
 create table rooms (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  payer_name text,
-  payer_venmo text,
-  items jsonb,
-  tax_rate numeric default 0.08875,
-  tip_rate numeric default 0.20,
-  created_at timestamptz default now()
+  id          text primary key default gen_random_uuid()::text,
+  name        text not null,
+  payer_name  text not null,
+  payer_venmo text not null,
+  items       jsonb not null,
+  tax_rate    numeric default 0.08875,
+  tip_rate    numeric default 0.20,
+  created_at  timestamptz default now()
 );
 
+-- 2. PARTICIPANTS
 create table participants (
-  id uuid primary key default gen_random_uuid(),
-  room_id uuid references rooms(id) on delete cascade,
-  name text not null,
-  venmo text,
-  done boolean default false,
+  id        text primary key default gen_random_uuid()::text,
+  room_id   text references rooms(id) on delete cascade,
+  name      text not null,
+  venmo     text,
+  done      boolean default false,
   created_at timestamptz default now()
 );
 
+-- 3. SELECTIONS
 create table selections (
-  id uuid primary key default gen_random_uuid(),
-  room_id uuid references rooms(id) on delete cascade,
-  participant_id uuid references participants(id) on delete cascade,
-  item_id text not null
+  id             text primary key default gen_random_uuid()::text,
+  participant_id text references participants(id) on delete cascade,
+  room_id        text references rooms(id) on delete cascade,
+  item_id        text not null
 );
 
--- RLS policies (allow anon access)
-alter table rooms enable row level security;
-create policy "allow all" on rooms for all using (true) with check (true);
+-- Enable Realtime
+alter publication supabase_realtime add table participants;
+alter publication supabase_realtime add table selections;
 
+-- RLS policies
+alter table rooms        enable row level security;
 alter table participants enable row level security;
-create policy "allow all" on participants for all using (true) with check (true);
+alter table selections   enable row level security;
 
-alter table selections enable row level security;
-create policy "allow all" on selections for all using (true) with check (true);
+create policy "anyone can read rooms"           on rooms        for select using (true);
+create policy "anyone can insert rooms"         on rooms        for insert with check (true);
+create policy "anyone can read participants"    on participants for select using (true);
+create policy "anyone can insert participants"  on participants for insert with check (true);
+create policy "anyone can update participants"  on participants for update using (true);
+create policy "anyone can read selections"      on selections   for select using (true);
+create policy "anyone can insert selections"    on selections   for insert with check (true);
+create policy "anyone can delete selections"    on selections   for delete using (true);
 ```
