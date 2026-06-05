@@ -20,15 +20,22 @@ const DEMO_ITEMS = [
   { id: "7", name: "Green Tea Ice Cream", price:  9.00 },
 ];
 
-function calcMyShare(items, myId, claimerMap, taxRate, tipRate) {
+function calcMyShare(items, myId, claimerMap, taxRate, tipRate, totalParticipants) {
   let sub = 0;
   const lines = [];
   items.forEach(item => {
-    const claimers = claimerMap[item.id] || [];
-    if (!claimers.includes(myId)) return;
-    const split = item.price / claimers.length;
-    sub += split;
-    lines.push({ ...item, split, splitCount: claimers.length });
+    if (item.forced) {
+      const count = Math.max(totalParticipants || 1, 1);
+      const split = item.price / count;
+      sub += split;
+      lines.push({ ...item, split, splitCount: count, forced: true });
+    } else {
+      const claimers = claimerMap[item.id] || [];
+      if (!claimers.includes(myId)) return;
+      const split = item.price / claimers.length;
+      sub += split;
+      lines.push({ ...item, split, splitCount: claimers.length });
+    }
   });
   const tax = sub * taxRate;
   const tip = sub * tipRate;
@@ -64,6 +71,8 @@ export default function App() {
   const [participants, setParticipants] = useState([]);
   const [allSelections, setAllSelections] = useState([]);
   const [myParticipant, setMyParticipant] = useState(null);
+  const [isHost,        setIsHost]        = useState(false);
+  const [forcedItems,   setForcedItems]   = useState([]);
   const [mySelected, setMySelected]     = useState([]);
   const [activeSettle, setActiveSettle] = useState(null);
   const [copied, setCopied]             = useState(false);
@@ -91,8 +100,9 @@ export default function App() {
     : allSelections;
 
   const claimerMap = buildClaimerMap(liveSelections);
+  const itemsWithForced = items.map(item => ({ ...item, forced: forcedItems.includes(item.id) }));
   const myShare    = myParticipant
-    ? calcMyShare(items, myParticipant.id, claimerMap, taxRate, tipRate)
+    ? calcMyShare(itemsWithForced, myParticipant.id, claimerMap, taxRate, tipRate, participants.length)
     : { sub: 0, tax: 0, tip: 0, total: 0, lines: [] };
 
   const allDone = participants.length > 0 && participants.every(p => p.done);
@@ -110,12 +120,17 @@ export default function App() {
   }
 
   async function refreshRoom(roomId) {
-    const [{ data: parts }, { data: sels }] = await Promise.all([
+    const [{ data: parts }, { data: sels }, { data: roomData }] = await Promise.all([
       sb.from("participants").select("*").eq("room_id", roomId),
       sb.from("selections").select("participant_id, item_id").eq("room_id", roomId),
+      sb.from("rooms").select("*").eq("id", roomId).single(),
     ]);
     setParticipants(parts || []);
     setAllSelections(sels || []);
+    if (roomData) {
+      setRoom(roomData);
+      setForcedItems((roomData.items || []).filter(i => i.forced).map(i => i.id));
+    }
   }
 
   useEffect(() => {
@@ -139,6 +154,7 @@ export default function App() {
     setRoom(data);
     const me = await addParticipant(data.id, myName, myVenmo);
     setMyParticipant(me);
+    setIsHost(true);
     setLoading(false);
     setScreen("select");
     window.history.pushState({}, "", `?room=${data.id}`);
@@ -166,13 +182,23 @@ export default function App() {
     );
   }
 
+  async function toggleForced(itemId) {
+    const updated = forcedItems.includes(itemId)
+      ? forcedItems.filter(id => id !== itemId)
+      : [...forcedItems, itemId];
+    setForcedItems(updated);
+    const updatedItems = items.map(item => ({ ...item, forced: updated.includes(item.id) }));
+    await sb.from("rooms").update({ items: updatedItems }).eq("id", room.id);
+  }
+
   async function saveSelections() {
     if (!myParticipant) return;
     setLoading(true);
     await sb.from("selections").delete().eq("participant_id", myParticipant.id);
-    if (mySelected.length > 0) {
+    const nonForced = mySelected.filter(id => !forcedItems.includes(id));
+    if (nonForced.length > 0) {
       await sb.from("selections").insert(
-        mySelected.map(item_id => ({ participant_id: myParticipant.id, room_id: room.id, item_id }))
+        nonForced.map(item_id => ({ participant_id: myParticipant.id, room_id: room.id, item_id }))
       );
     }
     await sb.from("participants").update({ done: true }).eq("id", myParticipant.id);
@@ -321,8 +347,35 @@ export default function App() {
       </div>
       <h2 style={s.h2}>Tap what you had</h2>
       <p style={s.sub2}>Hey {myParticipant?.name} — tap every item you ordered or shared</p>
+      {forcedItems.length > 0 && (
+        <>
+          <div style={s.divider}>Shared by the Table</div>
+          <div style={s.itemList}>
+            {items.filter(item => forcedItems.includes(item.id)).map(item => {
+              const perPerson = item.price / Math.max(participants.length, 1);
+              return (
+                <div key={item.id} style={{ ...s.item, ...s.itemForced }}>
+                  <span style={{ ...s.itemCheck, color:"#f0a500" }}>⊕</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={s.itemName}>{item.name}</div>
+                    <div style={{ ...s.itemSharedBy, color:"#f0a500" }}>split {participants.length} ways</div>
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={s.itemPrice}>${item.price.toFixed(2)}</div>
+                    <div style={{ ...s.itemMyChunk, color:"#f0a500" }}>your share ${perPerson.toFixed(2)}</div>
+                  </div>
+                  {isHost && (
+                    <button style={s.forceBtn} onClick={() => toggleForced(item.id)}>✕</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <div style={s.divider}>Your items</div>
       <div style={s.itemList}>
-        {items.map(item => {
+        {items.filter(item => !forcedItems.includes(item.id)).map(item => {
           const claimers   = claimerMap[item.id] || [];
           const iClaimed   = mySelected.includes(item.id);
           const splitCount = claimers.length;
@@ -332,20 +385,23 @@ export default function App() {
             .filter(Boolean);
           const myChunk = iClaimed && splitCount > 0 ? item.price / splitCount : null;
           return (
-            <div key={item.id} style={{ ...s.item, ...(iClaimed ? s.itemOn : {}) }} onClick={() => toggleItem(item.id)}>
-              <span style={s.itemCheck}>{iClaimed ? "✓" : "○"}</span>
-              <div style={{ flex:1, minWidth:0 }}>
+            <div key={item.id} style={{ ...s.item, ...(iClaimed ? s.itemOn : {}) }}>
+              <span style={s.itemCheck} onClick={() => toggleItem(item.id)}>{iClaimed ? "✓" : "○"}</span>
+              <div style={{ flex:1, minWidth:0 }} onClick={() => toggleItem(item.id)}>
                 <div style={s.itemName}>{item.name}</div>
                 {otherNames.length > 0 && (
                   <div style={s.itemSharedBy}>shared with {otherNames.join(", ")}</div>
                 )}
               </div>
-              <div style={{ textAlign:"right" }}>
+              <div style={{ textAlign:"right" }} onClick={() => toggleItem(item.id)}>
                 <div style={s.itemPrice}>${item.price.toFixed(2)}</div>
                 {myChunk !== null && splitCount > 1 && (
                   <div style={s.itemMyChunk}>your share ${myChunk.toFixed(2)}</div>
                 )}
               </div>
+              {isHost && (
+                <button style={s.forceBtn} onClick={() => toggleForced(item.id)} title="Split for everyone">⊕</button>
+              )}
             </div>
           );
         })}
@@ -408,7 +464,7 @@ export default function App() {
         <h2 style={s.h2}>Settle up 💸</h2>
         <p style={s.sub2}>Everyone pays {room?.payer_name} back via Venmo</p>
         {participants.map((p, i) => {
-          const share = calcMyShare(items, p.id, finalMap, taxRate, tipRate);
+          const share = calcMyShare(itemsWithForced, p.id, finalMap, taxRate, tipRate, participants.length);
           const open  = activeSettle === i;
           const isMe  = p.id === myParticipant?.id;
           return (
@@ -509,4 +565,6 @@ const s = {
   settleItem:   { display:"flex", justifyContent:"space-between", fontSize:13, color:"#999", marginBottom:5 },
   venmoBtn:     { display:"flex", justifyContent:"space-between", alignItems:"center", background:"#3d95ce", color:"#fff", textDecoration:"none", borderRadius:10, padding:"12px 16px", fontSize:14, fontWeight:700, marginTop:12 },
   venmoV:       { background:"#fff", color:"#3d95ce", width:22, height:22, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:900 },
+  itemForced:   { background:"rgba(240,165,0,0.07)", border:"1px solid rgba(240,165,0,0.3)" },
+  forceBtn:     { background:"none", border:"none", color:"#f0a500", fontSize:16, cursor:"pointer", padding:"0 0 0 8px", lineHeight:1, flexShrink:0 },
 };
