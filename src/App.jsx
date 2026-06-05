@@ -73,7 +73,9 @@ export default function App() {
   const [dinnerName, setDinnerName] = useState("");
   const [myName,     setMyName]     = useState("");
   const [myVenmo,    setMyVenmo]    = useState("");
-  const [dragging,   setDragging]   = useState(false);
+  const [dragging,     setDragging]     = useState(false);
+  const [parsedItems,  setParsedItems]  = useState(null);
+  const [parsing,      setParsing]      = useState(false);
   const fileRef = useRef();
 
   const items   = room?.items    || DEMO_ITEMS;
@@ -129,7 +131,7 @@ export default function App() {
     setLoading(true);
     const { data, error } = await sb.from("rooms").insert({
       name: dinnerName, payer_name: myName,
-      payer_venmo: myVenmo.replace("@", ""), items: DEMO_ITEMS,
+      payer_venmo: myVenmo.replace("@", ""), items: parsedItems || DEMO_ITEMS,
     }).select().single();
     if (error) { setError(error.message); setLoading(false); return; }
     setRoom(data);
@@ -176,6 +178,31 @@ export default function App() {
     setScreen("waiting");
   }
 
+  async function handleReceiptFile(file) {
+    if (!file) return;
+    setParsing(true);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target.result;
+      const base64 = dataUrl.split(",")[1];
+      const mediaType = file.type || "image/jpeg";
+      try {
+        const res = await fetch("/api/parse-receipt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: base64, mediaType }),
+        });
+        const data = await res.json();
+        if (data.items) setParsedItems(data.items);
+        else setError(data.error || "Could not parse receipt");
+      } catch {
+        setError("Receipt parsing failed");
+      }
+      setParsing(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
   function copyLink() {
     const url = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
     navigator.clipboard.writeText(url);
@@ -209,13 +236,36 @@ export default function App() {
       <div style={{ ...s.dropzone, ...(dragging ? s.dropzoneActive : {}) }}
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); }}
+        onDrop={e => { e.preventDefault(); setDragging(false); handleReceiptFile(e.dataTransfer.files[0]); }}
         onClick={() => fileRef.current?.click()}>
-        <input ref={fileRef} type="file" accept="image/*,.pdf" style={{ display:"none" }} />
-        <div style={{ fontSize:28, marginBottom:6 }}>📸</div>
-        <div style={{ fontSize:14, fontWeight:600, color:"#ccc", marginBottom:3 }}>Drop receipt photo</div>
-        <div style={{ fontSize:12, color:"#555" }}>Using demo receipt for now</div>
+        <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }}
+          onChange={e => handleReceiptFile(e.target.files[0])} />
+        {parsing
+          ? <><div style={{ fontSize:20, marginBottom:6 }}>⏳</div><div style={{ fontSize:13, color:"#888" }}>Reading receipt...</div></>
+          : parsedItems
+          ? <><div style={{ fontSize:20, marginBottom:6 }}>✓</div><div style={{ fontSize:13, color:"#4efe9a" }}>{parsedItems.length} items parsed — edit below</div></>
+          : <><div style={{ fontSize:28, marginBottom:6 }}>📸</div><div style={{ fontSize:14, fontWeight:600, color:"#ccc", marginBottom:3 }}>Drop receipt photo</div><div style={{ fontSize:12, color:"#555" }}>Or tap to upload — using demo items if skipped</div></>
+        }
       </div>
+      {parsedItems && (
+        <div style={{ marginBottom:18 }}>
+          <div style={s.divider}>Edit items</div>
+          {parsedItems.map((item, i) => (
+            <div key={item.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
+              <input style={{ ...s.input, flex:1 }} value={item.name}
+                onChange={e => setParsedItems(prev => prev.map((it, idx) => idx===i ? {...it, name: e.target.value} : it))} />
+              <input style={{ ...s.input, width:80 }} value={item.price} type="number" step="0.01"
+                onChange={e => setParsedItems(prev => prev.map((it, idx) => idx===i ? {...it, price: parseFloat(e.target.value)||0} : it))} />
+              <button style={{ ...s.ghostBtn, color:"#ff6b6b", fontSize:18, lineHeight:1 }}
+                onClick={() => setParsedItems(prev => prev.filter((_, idx) => idx !== i))}>×</button>
+            </div>
+          ))}
+          <button style={{ ...s.ghostBtn, color:"#4efe9a", fontSize:13, marginTop:4 }}
+            onClick={() => setParsedItems(prev => [...prev, { id: String(Date.now()), name: "", price: 0 }])}>
+            + Add item
+          </button>
+        </div>
+      )}
       <button style={{ ...s.primaryBtn, ...(!dinnerName||!myName||!myVenmo ? s.disabled : {}) }}
         disabled={!dinnerName||!myName||!myVenmo} onClick={createRoom}>
         Create room & get link
