@@ -1,5 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+export const config = {
+  api: { bodyParser: { sizeLimit: "10mb" } },
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
