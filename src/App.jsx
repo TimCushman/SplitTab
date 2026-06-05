@@ -75,6 +75,7 @@ export default function App() {
   const [myVenmo,    setMyVenmo]    = useState("");
   const [dragging,     setDragging]     = useState(false);
   const [parsedItems,  setParsedItems]  = useState(null);
+  const [parsedRates,  setParsedRates]  = useState(null);
   const [parsing,      setParsing]      = useState(false);
   const fileRef = useRef();
 
@@ -132,6 +133,7 @@ export default function App() {
     const { data, error } = await sb.from("rooms").insert({
       name: dinnerName, payer_name: myName,
       payer_venmo: myVenmo.replace("@", ""), items: parsedItems || DEMO_ITEMS,
+      ...(parsedRates && { tax_rate: parsedRates.taxRate, tip_rate: parsedRates.tipRate }),
     }).select().single();
     if (error) { setError(error.message); setLoading(false); return; }
     setRoom(data);
@@ -212,8 +214,15 @@ export default function App() {
         body: JSON.stringify({ imageBase64: base64, mediaType: "image/jpeg" }),
       });
       const data = await res.json();
-      if (data.items) setParsedItems(data.items);
-      else setError(data.error || "Could not parse receipt");
+      if (data.items) {
+        setParsedItems(data.items);
+        if (data.subtotal > 0) {
+          setParsedRates({
+            taxRate: data.tax / data.subtotal,
+            tipRate: data.tip / data.subtotal,
+          });
+        }
+      } else setError(data.error || "Could not parse receipt");
     } catch {
       setError("Receipt parsing failed");
     }
