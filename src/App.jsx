@@ -9,6 +9,8 @@ const SUPABASE_URL  = "https://muatxclycldcailbunjw.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11YXR4Y2x5Y2xkY2FpbGJ1bmp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MjQ1NjAsImV4cCI6MjA5NjIwMDU2MH0.pN6bMBwUUcZmBiuQea9qXqnYsI64jkDfpvNbHSlVWnY";
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+const ROOM_CODE_CHARS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const ROOM_CODE_LENGTH = 6;
 
 const DEMO_ITEMS = [
   { id: "1", name: "Spicy Tuna Roll",     price: 16.00 },
@@ -63,6 +65,18 @@ function getRoomIdFromUrl() {
   return new URLSearchParams(window.location.search).get("room");
 }
 
+function normalizeRoomCode(value) {
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9]{6}$/.test(trimmed) ? trimmed.toUpperCase() : trimmed;
+}
+
+function makeRoomCode() {
+  return Array.from(
+    { length: ROOM_CODE_LENGTH },
+    () => ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)]
+  ).join("");
+}
+
 export default function App() {
   const urlRoomId = getRoomIdFromUrl();
 
@@ -82,11 +96,13 @@ export default function App() {
   const [dinnerName, setDinnerName] = useState("");
   const [myName,     setMyName]     = useState("");
   const [myVenmo,    setMyVenmo]    = useState("");
+  const [roomCode,   setRoomCode]   = useState("");
   const [dragging,     setDragging]     = useState(false);
   const [parsedItems,  setParsedItems]  = useState(null);
   const [parsedRates,  setParsedRates]  = useState(null);
   const [parsing,      setParsing]      = useState(false);
   const fileRef = useRef();
+  const pendingSelections = useRef(new Map());
 
   const items   = room?.items    || DEMO_ITEMS;
   const taxRate = room?.tax_rate || 0.08875;
@@ -111,10 +127,12 @@ export default function App() {
 
   async function loadRoom(id) {
     setLoading(true);
-    const { data, error } = await sb.from("rooms").select("*").eq("id", id).single();
+    const normalizedId = normalizeRoomCode(id);
+    const { data, error } = await sb.from("rooms").select("*").eq("id", normalizedId).single();
     if (error || !data) { setError("Room not found."); setLoading(false); return; }
     setRoom(data);
-    await refreshRoom(id);
+    setRoomCode(data.id);
+    await refreshRoom(data.id);
     setLoading(false);
     setScreen("join");
   }
@@ -134,30 +152,51 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!room) return;
-    const ch = sb.channel(`room-${room.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `room_id=eq.${room.id}` }, () => refreshRoom(room.id))
-      .on("postgres_changes", { event: "*", schema: "public", table: "selections",   filter: `room_id=eq.${room.id}` }, () => refreshRoom(room.id))
+    if (!room?.id) return;
+    const roomId = room.id;
+    const ch = sb.channel(`room-${roomId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms",        filter: `id=eq.${roomId}` },      () => refreshRoom(roomId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `room_id=eq.${roomId}` }, () => refreshRoom(roomId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "selections",   filter: `room_id=eq.${roomId}` }, () => refreshRoom(roomId))
       .subscribe();
     return () => sb.removeChannel(ch);
-  }, [room]);
+  }, [room?.id]);
 
   async function createRoom() {
     if (!dinnerName || !myName || !myVenmo) return;
     setLoading(true);
-    const { data, error } = await sb.from("rooms").insert({
-      name: dinnerName, payer_name: myName,
-      payer_venmo: myVenmo.replace("@", ""), items: parsedItems || DEMO_ITEMS,
-      ...(parsedRates && { tax_rate: parsedRates.taxRate, tip_rate: parsedRates.tipRate }),
-    }).select().single();
+    let data;
+    let error;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const code = makeRoomCode();
+      const result = await sb.from("rooms").insert({
+        id: code,
+        name: dinnerName, payer_name: myName,
+        payer_venmo: myVenmo.replace("@", ""), items: parsedItems || DEMO_ITEMS,
+        ...(parsedRates && { tax_rate: parsedRates.taxRate, tip_rate: parsedRates.tipRate }),
+      }).select().single();
+      data = result.data;
+      error = result.error;
+      if (!error || error.code !== "23505") break;
+    }
+
     if (error) { setError(error.message); setLoading(false); return; }
     setRoom(data);
+    setRoomCode(data.id);
     const me = await addParticipant(data.id, myName, myVenmo);
     setMyParticipant(me);
     setIsHost(true);
     setLoading(false);
     setScreen("select");
     window.history.pushState({}, "", `?room=${data.id}`);
+  }
+
+  function joinByCode() {
+    const normalizedCode = normalizeRoomCode(roomCode);
+    if (normalizedCode.length !== ROOM_CODE_LENGTH) return;
+    setRoomCode(normalizedCode);
+    loadRoom(normalizedCode);
   }
 
   async function joinRoom() {
@@ -176,10 +215,36 @@ export default function App() {
     return data;
   }
 
-  function toggleItem(itemId) {
+  async function toggleItem(itemId) {
+    if (!myParticipant || !room || pendingSelections.current.has(itemId)) return;
+
+    const hadItem = mySelected.includes(itemId);
     setMySelected(prev =>
-      prev.includes(itemId) ? prev.filter(x => x !== itemId) : [...prev, itemId]
+      hadItem ? prev.filter(x => x !== itemId) : [...prev, itemId]
     );
+
+    const request = hadItem
+      ? sb.from("selections").delete().eq("participant_id", myParticipant.id).eq("item_id", itemId)
+      : sb.from("selections").insert({ participant_id: myParticipant.id, room_id: room.id, item_id: itemId });
+
+    const operation = (async () => {
+      const { error } = await request;
+      if (error) {
+        setMySelected(prev =>
+          hadItem ? [...prev, itemId] : prev.filter(x => x !== itemId)
+        );
+        setError(error.message);
+        return false;
+      }
+      return true;
+    })();
+
+    pendingSelections.current.set(itemId, operation);
+    try {
+      await operation;
+    } finally {
+      pendingSelections.current.delete(itemId);
+    }
   }
 
   async function toggleForced(itemId) {
@@ -188,22 +253,52 @@ export default function App() {
       : [...forcedItems, itemId];
     setForcedItems(updated);
     const updatedItems = items.map(item => ({ ...item, forced: updated.includes(item.id) }));
-    await sb.from("rooms").update({ items: updatedItems }).eq("id", room.id);
+    const { error } = await sb.from("rooms").update({ items: updatedItems }).eq("id", room.id);
+    if (error) {
+      setForcedItems(forcedItems);
+      setError(error.message);
+    }
   }
 
   async function saveSelections() {
     if (!myParticipant) return;
     setLoading(true);
-    await sb.from("selections").delete().eq("participant_id", myParticipant.id);
-    const nonForced = mySelected.filter(id => !forcedItems.includes(id));
-    if (nonForced.length > 0) {
-      await sb.from("selections").insert(
-        nonForced.map(item_id => ({ participant_id: myParticipant.id, room_id: room.id, item_id }))
-      );
+    const selectionResults = await Promise.all(pendingSelections.current.values());
+    if (selectionResults.some(result => !result)) {
+      setLoading(false);
+      return;
     }
-    await sb.from("participants").update({ done: true }).eq("id", myParticipant.id);
+    const { error } = await sb.from("participants").update({ done: true }).eq("id", myParticipant.id);
     setLoading(false);
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setScreen("waiting");
+  }
+
+  async function editSelections() {
+    if (!myParticipant) return;
+    const { error } = await sb.from("participants").update({ done: false }).eq("id", myParticipant.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setScreen("select");
+  }
+
+  function goHome() {
+    setError(null);
+    setRoom(null);
+    setRoomCode("");
+    setMyParticipant(null);
+    setMySelected([]);
+    setParticipants([]);
+    setAllSelections([]);
+    setForcedItems([]);
+    setIsHost(false);
+    setScreen("home");
+    window.history.pushState({}, "", window.location.pathname);
   }
 
   async function compressImage(file) {
@@ -272,7 +367,7 @@ export default function App() {
   if (error) return (
     <div style={s.page}><div style={s.card}>
       <p style={{ color:"#ff6b6b" }}>{error}</p>
-      <button style={s.ghostBtn} onClick={() => { setError(null); setScreen("home"); }}>Back</button>
+      <button style={s.ghostBtn} onClick={goHome}>Back</button>
     </div></div>
   );
 
@@ -280,6 +375,14 @@ export default function App() {
     <div style={s.page}><div style={s.card}>
       <div style={s.logo}><span style={s.logoMark}>⬡</span><span style={s.logoText}>SplitTab</span></div>
       <p style={s.sub}>Drop a receipt. Tap what you had. Shared dishes split automatically.</p>
+      <Divider>Join an existing room</Divider>
+      <Field label="Room code" value={roomCode}
+        onChange={value => setRoomCode(normalizeRoomCode(value))}
+        placeholder="e.g. 4K7M2P" />
+      <button style={{ ...s.ghostActionBtn, ...(roomCode.length !== ROOM_CODE_LENGTH ? s.disabled : {}) }}
+        disabled={roomCode.length !== ROOM_CODE_LENGTH} onClick={joinByCode}>
+        Join with code
+      </button>
       <Divider>The dinner</Divider>
       <Field label="Dinner name" value={dinnerName} onChange={setDinnerName} placeholder="e.g. Sushi Friday" />
       <Divider>You (the one who paid)</Divider>
@@ -423,8 +526,8 @@ export default function App() {
           <TallyRow label="Your total" val={myShare.total} bold />
         </div>
       )}
-      <button style={{ ...s.primaryBtn, ...(mySelected.length === 0 ? s.disabled : {}) }}
-        disabled={mySelected.length === 0} onClick={saveSelections}>
+      <button style={{ ...s.primaryBtn, ...(myShare.lines.length === 0 ? s.disabled : {}) }}
+        disabled={myShare.lines.length === 0} onClick={saveSelections}>
         Save & wait for everyone
       </button>
     </div></div>
@@ -454,6 +557,7 @@ export default function App() {
         ? <button style={s.primaryBtn} onClick={() => setScreen("settle")}>Everyone's in — Settle up 🎉</button>
         : <p style={{ textAlign:"center", color:"#555", fontSize:12, marginTop:10 }}>Updates live as friends submit</p>
       }
+      <button style={s.ghostActionBtn} onClick={editSelections}>Edit my selections</button>
     </div></div>
   );
 
@@ -485,7 +589,7 @@ export default function App() {
                   <div style={s.tallyDivider} />
                   <TallyRow label="Tax" val={share.tax} />
                   <TallyRow label="Tip" val={share.tip} />
-                  {!isMe && room?.payer_venmo && (
+                  {isMe && !isHost && room?.payer_venmo && (
                     <a href={venmoLink(room.payer_venmo, share.total, `${room.name} tab`)} style={s.venmoBtn}>
                       <span>Pay ${share.total.toFixed(2)} on Venmo</span>
                       <span style={s.venmoV}>V</span>
@@ -541,6 +645,7 @@ const s = {
   primaryBtn:   { width:"100%", padding:"14px", background:"#4efe9a", color:"#080810", border:"none", borderRadius:12, fontSize:15, fontWeight:700, cursor:"pointer", marginTop:6 },
   disabled:     { opacity:0.3, cursor:"not-allowed" },
   ghostBtn:     { background:"none", border:"none", color:"#888", cursor:"pointer", fontSize:13, padding:0 },
+  ghostActionBtn:{ width:"100%", padding:"11px", background:"rgba(255,255,255,0.04)", color:"#aaa", border:"1px solid rgba(255,255,255,0.1)", borderRadius:10, fontSize:13, fontWeight:600, cursor:"pointer", marginTop:6 },
   copyBtn:      { background:"rgba(78,254,154,0.12)", border:"1px solid rgba(78,254,154,0.25)", color:"#4efe9a", borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:600, cursor:"pointer" },
   itemList:     { display:"flex", flexDirection:"column", gap:8, marginBottom:18 },
   item:         { display:"flex", alignItems:"flex-start", gap:12, padding:"12px 14px", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:12, cursor:"pointer" },

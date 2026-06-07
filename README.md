@@ -58,6 +58,7 @@ create table selections (
 );
 
 -- Enable Realtime
+alter publication supabase_realtime add table rooms;
 alter publication supabase_realtime add table participants;
 alter publication supabase_realtime add table selections;
 
@@ -68,6 +69,7 @@ alter table selections   enable row level security;
 
 create policy "anyone can read rooms"           on rooms        for select using (true);
 create policy "anyone can insert rooms"         on rooms        for insert with check (true);
+create policy "anyone can update rooms"         on rooms        for update using (true);
 create policy "anyone can read participants"    on participants for select using (true);
 create policy "anyone can insert participants"  on participants for insert with check (true);
 create policy "anyone can update participants"  on participants for update using (true);
